@@ -1,0 +1,275 @@
+---
+title: "projet_fdd"
+author: "Uzma Unia & Réda Es-sakhi"
+date: "25/05/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+```{r}
+library(gtsummary)
+library(tidyverse)
+library(randomForest)
+library(tree)
+
+```
+
+
+```{r}
+# Chargement des données maths
+sdata <- read.csv("student-mat.csv", sep = ";")
+# attach(sdata)
+sdata %>% head()
+```
+```{r}
+sdata %>% str()
+```
+```{r}
+attach(sdata)
+pairs(~G3 + G1 + G2)
+```
+
+```{r}
+sdata <- sdata %>% select(-c(G1, G2))
+sdata$G3_b <- if_else(G3<10,0,1)
+sdata <- sdata %>% select(-G3)
+sdata
+```
+
+```{r}
+#Transformer les variables quali as.factor (sauf "age" et "absences")
+sdata %>% names()
+
+for (i in c(1:2,4:29,31)) {
+  sdata[,i] <- as.factor(sdata[,i])
+  
+}
+```
+
+```{r}
+sdata %>% str()
+```
+
+```{r}
+summary(sdata)
+```
+
+
+```{r}
+attach(sdata)
+barplot(table(G3_b), xlab = "Nombre d'étudiant avec une note finale inférieure à 10 (0) et supérieure à 10 (1)")
+```
+```{r}
+sdata %>% tbl_summary(by = G3_b,
+                      statistic = list(all_continuous() ~ "{median} {mean} {max} {min}  ({sd})",
+                                       all_categorical() ~ "{n} / {N} ({p}%)")) %>% modify_header(
+                                         
+                      label ~ "RESULTAT MATHS ( 0 : ECHEC, 1 : REUSSITE)"
+                                       )
+
+```
+```{r}
+aggregate(sdata[c("absences")],by=list(sdata$G3_b), max, na.rm=TRUE)
+```
+# Decision Tree model
+## libraries
+```{r}
+#Générer un jeu de données entrainement et test
+set.seed(123)
+train_split <- sample(1:nrow(sdata), round(nrow(sdata)*0.7))
+test_split <- - train_split
+train_sdata <- sdata[train_split,]
+test_sdata <- sdata[test_split,]
+test_actual <- sdata$G3_b[test_split]
+```
+```{r}
+# classification tree model
+## détéction des meilleurs prédicteur (sélection variable)
+tree_fit <- tree(G3_b~.,data = train_sdata)
+summary(tree_fit)
+```
+
+```{r}
+## 27 groupe de résultat (nœuds terminaux) 
+## l'erreur de classification 13%
+## les variables non sélectionnées : 
+names(sdata)[which(!(names(sdata) %in% summary(tree_fit)$used))] #G3_b étant la variable prédite
+```
+
+```{r}
+table(train_sdata$G3_b) %>% prop.table()
+table(train_sdata$G3_b) 
+```
+
+```{r}
+## 27 groupe de resultat (noeauds terminaux) 
+## l'erreur de classification 13%
+```
+```{r}
+tree_fit
+```
+
+```{r}
+plot(tree_fit)
+text(tree_fit, pretty = 0, cex = 0.7)
+title(main = "Unpruned Classification Tree")
+```
+
+
+
+
+```{r}
+#Erreur de prédiction / Matrice de confusion avec les données test
+tree_pred <- predict(tree_fit, test_sdata, type = "class")
+table(predicted = tree_pred, actual = test_actual)
+mean(tree_pred != test_actual) # 35% taux d'erreur ce qui n'est pas idéal pour des données inconunes / données test
+
+
+```
+
+```{r}
+
+#nOUS SOUHAITONS ESSAYER d'améliorer la qualité de prédiction du modèle
+## PRUNNING ET K-FOLD corss validation / élagage
+# 5-fold cross validation
+
+tree_cv10 <- cv.tree(tree_fit, FUN = prune.misclass, K=10) # créer 10 groupes de données 
+tree_cv10
+```
+
+
+
+```{r}
+plot(tree_cv10$size, tree_cv10$dev, type = "b", col = "blue" 
+     # , lty = "dashed"
+     )
+```
+```{r}
+# 15-fold cross validation
+tree_cv15 <- cv.tree(tree_fit, FUN = prune.misclass, K=15)
+tree_cv15
+
+```
+
+```{r}
+# plot la déviance (ici ~ taux de mauvais classement) selon le nombre de taille de l'arbre
+plot(tree_cv10$size, tree_cv10$dev, type = "b", col = "blue" 
+     # , lty = "dashed"
+     )
+lines(tree_cv15$size, tree_cv15$dev, type = "b", col = "red" )
+legend (20,90,legend = c("10 Fold CV","15-Fold CV"), col = c("blue","red"), lty = 1)
+```
+```{r}
+# 10-fold et 15-fold CV indique que une taille d'arbre optimal minimisant l'erreur se situe entre 
+tree_pruned8 <-  prune.misclass(tree_fit,best = 8)
+tree_pruned8
+plot(tree_pruned8)
+text(tree_pruned8, pretty = 0, cex = 1)
+title(main = "pruned Classification Tree : 8")
+```
+
+
+
+
+```{r}
+prune_tree_pred <- predict(tree_pruned8, test_sdata, type = "class")
+summary(prune_tree_pred)
+summary(test_actual)
+table(predicted = prune_tree_pred, actual = test_actual)
+
+mean(prune_tree_pred != test_actual) # 
+```
+# 0.3445378
+
+```{r}
+#test sur le jeux de données entrainement
+prune_tree_pred_traind <- predict(tree_pruned8, train_sdata, type = "class")
+summary(prune_tree_pred_traind)
+summary(test_actual)
+train_actual <- sdata$G3_b[train_split]
+table(predicted = prune_tree_pred_traind, actual = train_actual)
+
+mean(prune_tree_pred_traind != train_actual) # 
+
+
+```
+
+
+```{r}
+#multiple trees and agregate result bagging (do not need to plot tree) -> better prediction result
+
+## bagging 22:01 (special case of randomforest using all available predictors for tree splitting from the boostrap data sets)
+
+bagging_tree_fit <- randomForest(G3_b~., data = train_sdata, mtry = 30, importance = TRUE, ntree = 500 ) # 500 bootstrap dataset 500 trees prediction
+bagging_tree_fit
+```
+# les prédicteurs importants
+```{r}
+importance(bagging_tree_fit)
+```
+```{r}
+varImpPlot(bagging_tree_fit, cex = 0.7)
+```
+```{r}
+bagging_tree_pred <- predict(bagging_tree_fit, newdata = test_sdata, type = "class")
+table(bagging_tree_pred, test_actual)
+mean(bagging_tree_pred != test_actual)
+```
+
+```{r}
+#random forest -> déterminer le bon nombre ou maxim de prédicteurs / variables (max) à utiliser 
+rf_error = rep(0,30)
+for (i in 1:30) {
+  rf_tree_fit = randomForest(G3_b~., data = train_sdata, mtry = i, importance = TRUE, ntree = 500)
+  rf_tree_pred = predict(rf_tree_fit, newdata = test_sdata, type = "class")
+  rf_error[i] = mean(rf_tree_pred != test_actual )
+}
+MTRY = c(1:30)
+plot(MTRY, rf_error , type = "b", col = "green")
+```
+```{r}
+data.frame(MTRY, rf_error)
+```
+```{r}
+min_error_rate = min(rf_error) 
+print(min_error_rate)
+K = which(rf_error == min_error_rate)
+print(K)
+```
+
+```{r}
+# 9 prédicteurs maxim
+rf_tree_fit9 <- randomForest(G3_b~., data = train_sdata, mtry = 9, importance = TRUE, ntree = 500)
+importance(rf_tree_fit9)
+varImpPlot(rf_tree_fit9, cex = 0.7)
+```
+```{r}
+rf_tree_pred9 <- predict(rf_tree_fit9, newdata = test_sdata, type = "class")
+table(rf_tree_pred9, test_actual)
+mean(rf_tree_pred9 != test_actual)
+```
+```{r}
+# 11 prédicteurs maxim
+rf_tree_fit11 <- randomForest(G3_b~., data = train_sdata, mtry = 11, importance = TRUE, ntree = 500)
+rf_tree_pred11 <- predict(rf_tree_fit11, newdata = test_sdata, type = "class")
+table(rf_tree_pred11, test_actual)
+mean(rf_tree_pred11 != test_actual)
+```
+```{r}
+# 15 prédicteurs maxim
+rf_tree_fit15 <- randomForest(G3_b~., data = train_sdata, mtry = 15, importance = TRUE, ntree = 500)
+rf_tree_pred15 <- predict(rf_tree_fit15, newdata = test_sdata, type = "class")
+table(rf_tree_pred15, test_actual)
+mean(rf_tree_pred15 != test_actual)
+
+```
+```{r}
+importance(rf_tree_fit15)
+varImpPlot(rf_tree_fit15, cex = 0.7)
+```
+
+
+
+
